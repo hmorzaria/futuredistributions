@@ -1,39 +1,40 @@
-# History files
+.Rproj.user
 .Rhistory
-.Rapp.history
-
-# Session Data files
 .RData
-
-# User-specific files
 .Ruserdata
+packrat/lib*/
 
-# Example code in package build process
-*-Ex.R
+/biodiverdata/
+/biooracle/
+/biooracle_asc/
+/catchdata/
+/data/
+/ECOG-01509/
+/figures/
+/occurrence_maps/
+/rasters/
+/sdm_pacific_biooracle/
+/sdm_pacific_observed/
+/synonym_res/
+/thindata_atlantic/
+/thindata_pacific/
+/XLMSchema/
 
-# Output files from R CMD build
-/*.tar.gz
+CONAPESCA_IFAI_2000-2016.xlsx
+CONAPESCA_IFAI_Pacifico.xlsx
+biodiversity_all_records.csv
+CONAPESCA_ocurrencias_reg.csv
+pacific_9km.shp
+atlantic_species_occurrence.csv
+atlantic _CONAPESCA_sp_20reg.csv
+atlantic _CONAPESCA_sp_30reg.csv
+atlantic _CONAPESCA_sp_20reg_rev.csv
+CONAPESCA_ocurrence_target_sp.csv
+pacific_species_occurrence.csv
+pacific _CONAPESCA_sp_20reg.csv
+pacific _CONAPESCA_sp_30reg.csv
+pacific _CONAPESCA_sp_20reg_rev.csv
 
-# Output files from R CMD check
-/*.Rcheck/
-
-# RStudio files
-.Rproj.user/
-
-# produced vignettes
-vignettes/*.html
-vignettes/*.pdf
-
-# OAuth2 token, see https://github.com/hadley/httr/releases/tag/v0.3
-.httr-oauth
-
-# knitr and R markdown default cache directories
-*_cache/
-/cache/
-
-# Temporary files created by R markdown
-*.utf8.md
-*.knit.md
-
-# R Environment Variables
-.Renviron
+*.csv
+*.png
+*.pdf

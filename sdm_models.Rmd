@@ -1,0 +1,740 @@
+---
+title: "R Notebook for SDM of catch species in the Mexican Pacific and Gulf of Mexico"
+output: html_notebook
+---
+
+ 
+
+```{r Attach packages, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+# List of packages for session
+source("libraries.R")
+
+source("fisheries_sdm_CONAPESCA_chunks.R")
+source("update_species.R")
+source("thin_data.R")
+source("make_occ_map.R")
+source("make_all_map.R")
+source("ensemble_smd.R")
+source("ensemble_project.R")
+source("add_anomaly.R")
+```
+
+```{r}
+#create map
+#scale factor is how much distance to add in the edges of the map, units are dependent on the coordinate system of the shapefile
+#bar position can be top or bottom (t,b) or left or right (l,r)
+
+model.map <- make_map(shape.file="ne_10m_land.shp", file.name = "mexico_ezz_map.png", scale.factor = 2, bar.position = "tl",
+                      min.long= -130.00, max.long=-50, min.lat=-10.00, max.lat=40.00)
+
+model.map
+```
+
+Manually reviewed species lists, to fix outstanding synonyms or taxonomic changes. Then updated the coordinate files
+```{r}
+
+update_species(thissamplearea="atlantic")
+
+update_species(thissamplearea="pacific")
+
+
+
+```
+
+
+We thinned the occurrence records in geographic space to correct for this bias; this approach takes a set of occurrence records and identifies multiple new subsets that meet the minimum nearest neighbor distance constraint, based on an automated randomization approach
+
+
+```{r thindata, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+datapath <- "~/conapescaspecies" #put path
+setwd(datapath)
+
+# thissamplearea <- "atlantic"
+# 
+# goc.20.sp <- read_csv(paste(thissamplearea,"_CONAPESCA_sp_20reg_rev.csv"))
+# 
+# sp.goc.20 <- goc.20.sp %>% 
+#     distinct(species) %>% 
+#     arrange(species) %>% 
+#     pull(species)
+# 
+# 
+# mclapply(sp.goc.20,thin_data, goc.20.sp, thissamplearea)
+
+thissamplearea  <- "pacific"
+
+goc.20.sp <- read_csv(paste(thissamplearea,"_CONAPESCA_sp_20reg.csv"))
+
+sp.goc.20 <- goc.20.sp %>% 
+    distinct(species) %>% 
+    arrange(species) %>% 
+    pull(species)
+
+ 
+mclapply(sp.goc.20,thin_data, goc.20.sp, thissamplearea)
+
+```
+
+
+We only had max, min, and mean for observed rasters, so calculated the range
+```{r}
+lapply(sample.areas,get_range)
+setwd(datapath)
+
+```
+
+#retrieved rasters from Bio-Oracle
+```{r getbiooracle, message=FALSE, warning=FALSE, include=FALSE}
+crs.geo.wgs <- CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")  # geographical, datum WGS84
+
+biooracle.rasters <- list_layers(c("Bio-ORACLE")) %>% 
+  as_tibble()
+
+biooracle.rasters %>% 
+  write_csv("biooracle_layers.csv")
+
+biooracle.codes <- biooracle.rasters %>% 
+  filter(!grepl("ice",layer_code)) %>% 
+   filter(!grepl("cloud",layer_code)) %>% 
+  distinct(layer_code)
+
+# (down)load specific layers 
+biooracle.data <- load_layers(biooracle.codes)
+
+list.layers <- list.files("~/conapescaspecies/biooracle", pattern="*.*tif$", full.names = TRUE)
+
+save_dir <- "~/conapescaspecies/biooracle_asc"
+dir.create(save_dir)
+
+crs.geo.wgs <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"  # geographical, datum WGS84
+
+reference.raster <- raster("~/conapescaspecies/rasters/atlantic/alk_max.asc")
+projection(reference.raster) <-CRS(crs.geo.wgs)  # geographical, datum WGS84
+ 
+#cut rasters to study area  
+lapply(list.layers,cut_raster,reference.raster,crs.geo.wgs, study.area="atlantic")
+
+reference.raster <- raster("~/conapescaspecies/rasters/pacific/alk_max.asc")
+projection(reference.raster) <-CRS(crs.geo.wgs)  # geographical, datum WGS84
+ 
+#cut rasters to study area  
+lapply(list.layers,cut_raster,reference.raster,crs.geo.wgs, study.area="pacific")
+
+```
+
+Estimated colinearity of observed rasters, there were too many layers, so this helped narrow down the dataset
+
+```{r colinear_test, message=FALSE, warning=FALSE, include=FALSE}
+
+#load first set of rasters
+
+thissamplearea = "pacific"
+
+list.rasters <- list.files(path="~/conapescaspecies/biooracle_asc/",pattern = paste0("*.*",thissamplearea,".asc"), full.names = TRUE)
+
+colinear_test(thissamplearea, parameter.names = "biooracle_layers.csv", list.rasters, raster.name="biooracle")
+
+
+thissamplearea = "atlantic"
+
+list.rasters <- list.files(path="~/conapescaspecies/biooracle_asc/",pattern = paste0("*.*",thissamplearea,".asc"), full.names = TRUE)
+
+colinear_test(thissamplearea, parameter.names = "biooracle_layers.csv", list.rasters, raster.name="biooracle")
+
+
+thissamplearea = "pacific"
+
+list.rasters <- list.files(path=paste("~/conapescaspecies/rasters/",thissamplearea,sep=""), pattern=".asc", full.names = TRUE)
+
+colinear_test(thissamplearea, parameter.names = "observed_layers.csv", list.rasters, raster.name="observed")
+
+
+thissamplearea = "atlantic"
+
+list.rasters <- list.files(path=paste("~/conapescaspecies/rasters/",thissamplearea,sep=""), pattern=".asc", full.names = TRUE)
+
+colinear_test(thissamplearea, parameter.names = "observed_layers.csv", list.rasters, raster.name="observed")
+
+
+  
+```
+
+
+Created projected rasters
+```{r}
+
+#MPI model
+obs.dir <- "~/conapescaspecies/rasters/pacific"
+save.dir <- "~/conapescaspecies/rasters/pacific_mpi"
+
+thismodel = "MPI_ESM"
+
+cmip.rasters <- list.files(path="~/climatemodels/climatemodelensembles/",pattern = "tos*.*MPI-ESM-MR*.*rcp85*.*2070", full.names = TRUE)
+
+all.obs.rasters <- list.files(path=obs.dir,pattern ="sst*.*")
+                               
+observed.rasters <- all.obs.rasters[!grepl("range",all.obs.rasters)]
+
+lapply(observed.rasters,add_anomaly,cmip.rasters, save.dir, obs.dir, thismodel)
+
+
+cmip.rasters <- list.files(path="~/climatemodels/climatemodelensembles/",pattern = "sos_*.*MPI-ESM-MR*.*rcp85*.*2070", full.names = TRUE)
+
+all.obs.rasters <- list.files(path=obs.dir,pattern ="sal*.*")
+                               
+observed.rasters <- all.obs.rasters[!grepl("range",all.obs.rasters)]
+
+lapply(observed.rasters,add_anomaly,cmip.rasters, save.dir, obs.dir, thismodel)
+
+
+#GFDL model
+
+obs.dir <- "~/conapescaspecies/rasters/pacific"
+save.dir <- "~/conapescaspecies/rasters/pacific_gfdl"
+
+thismodel = "GFDL"
+
+list.rasters <- list.files(path="~/climatemodels/climatemodelensembles/",pattern = "tos*.*GFDL-ESM2M_*.*rcp85*.*2070", full.names = TRUE)
+
+
+all.obs.rasters <- list.files(path=obs.dir,pattern ="sst*.*")
+                               
+observed.rasters <- all.obs.rasters[!grepl("range",all.obs.rasters)]
+
+lapply(observed.rasters,add_anomaly,cmip.rasters, save.dir, obs.dir, thismodel)
+
+
+list.rasters <- list.files(path="~/climatemodels/climatemodelensembles/",pattern = "sos*.*GFDL-ESM2M_*.*rcp85*.*2070", full.names = TRUE)
+
+
+all.obs.rasters <- list.files(path=obs.dir,pattern ="sal*.*")
+                               
+observed.rasters <- all.obs.rasters[!grepl("range",all.obs.rasters)]
+
+lapply(observed.rasters,add_anomaly,cmip.rasters, save.dir, obs.dir, thismodel)
+
+
+```
+
+
+Plot occurrence
+```{r}
+
+map.dir <- "/home/atlantis/conapescaspecies/occurrence_maps/"
+  dir.create(map.dir)
+  
+thissamplearea <- "pacific"
+
+sp.list <- list.files(path=paste("~/conapescaspecies/thindata",thissamplearea,sep="_"), pattern = "*.*txt$") %>% 
+  gsub("_thinned_full_log_file.txt","",.)
+
+pacific.rec <- lapply(sp.list,make_occ_map,thissamplearea,min.lon= -130.00, max.lon=-50, min.lat=-10.00, max.lat=40.00, map.dir)
+
+pacific.occ <- pacific.rec %>% 
+  discard(is.null) %>% 
+  bind_rows()
+
+write_csv(pacific.occ,"pacific_occ_thinned.csv")
+
+
+thissamplearea <- "atlantic"
+
+sp.list <- list.files(path=paste("~/conapescaspecies/thindata",thissamplearea,sep="_"), pattern = "*.*txt$") %>% 
+  gsub("_thinned_full_log_file.txt","",.)
+
+atlantic.rec <- lapply(sp.list,make_occ_map,thissamplearea,min.lon= -130.00, max.lon=-50, min.lat=-10.00, max.lat=40.00, map.dir)
+
+atlantic.occ <- atlantic.rec %>% 
+  discard(is.null) %>% 
+  bind_rows()
+
+write_csv(atlantic.occ,"atlantic_occ_thinned.csv")
+
+
+combined.data <- atlantic.occ %>% 
+  bind_rows(pacific.occ)
+  
+make_all_map(combined.data, min.lon= -130.00, max.lon=-50, min.lat=-10.00, max.lat=40.00)
+
+
+```
+
+
+Plot species composition
+
+```{r}
+sp.rec <- read_csv("pacific_occ_thinned.csv") %>% 
+  group_by(species) %>% 
+  summarise(no_records = n()) %>% 
+ # filter(no_records > 100) %>% 
+  arrange(desc(no_records)) %>% 
+  mutate(sum_abundance = cumsum(no_records), tot_rec = sum(no_records), prop_records = (sum_abundance/tot_rec)*100) %>% 
+  filter(!species%in%c("oxyporhamphus micropterus micropterus","oxyporhamphus micropterus")) %>% 
+  filter(prop_records<20) %>% 
+  mutate(species = str_to_sentence(species))
+
+ggplot() +
+       geom_col(data = sp.rec , aes(x = species, y = prop_records), fill="darkblue") +
+       scale_fill_viridis_c(na.value = "gray85") +
+       coord_quickmap()+
+       theme_minimal()+
+       xlab("Species") + 
+       ylab("Percent cumulative abundance") +
+      theme(axis.text.x = element_text(angle = 90)) 
+  
+  ggsave("cumulative_abundance_plot.png", dpi=300)
+      
+```
+
+
+
+Estimate ensemble models, observed rasters 
+
+```{r get_esmd, message=TRUE, warning=TRUE, include=FALSE}
+
+thissamplearea <- "pacific"
+
+sp.list <- read_csv("pacific_occ_thinned.csv") %>% 
+  group_by(species) %>% 
+  summarise(no_records = n()) %>% 
+  filter(no_records > 20) %>% 
+  arrange(no_records) %>% 
+  .$species
+
+
+#sp.list <- list.files(path=paste("~/conapescaspecies/thindata",thissamplearea,sep="_"), pattern = "*.*txt$") %>% 
+#  gsub("_thinned_full_log_file.txt","",.)
+
+
+NumberOfCluster <- detectCores() - 4
+cl <- makeCluster(NumberOfCluster)
+registerDoSNOW(cl)
+ 
+clusterExport(cl, c("ensemble_smd"))
+
+raster.path ="~/conapescaspecies/rasters/pacific/"
+
+thissamplearea <- "pacific"
+
+#raster.name = "observed"
+raster.name = "biooracle"
+
+sdm.dir <- paste0("/home/atlantis/conapescaspecies/sdm_",thissamplearea,"_",raster.name)
+dir.create(sdm.dir)
+
+raster.sel.list <- read_csv(file=paste(thissamplearea,raster.name,"rasters_selected.csv",sep="_")) %>% 
+      pull(x) %>% 
+      paste(.,".asc",sep="") %>% 
+      paste(raster.path,., sep="")
+    
+rasters.selected <- stack(raster.sel.list)
+    
+projection(rasters.selected) <-CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")  # geographical, datum WGS84
+    
+ocean.shp <- readOGR("ne_10m_ocean.shp")
+
+ sp.esdm <- foreach(this.species=sp.list, .verbose = T, .export = c("raster.path","thissamplearea","raster.name","sdm.dir","ocean.shp")) %dopar% {
+
+
+ .packages <- (c("tidyverse","raster","SSDM","cowplot"))
+
+ # Install CRAN packages (if not already installed)
+
+ if(!require(SSDM)){
+      devtools::install_github("sylvainschmitt/SSDM")
+
+ }
+
+ .inst <- .packages %in% installed.packages()
+ if(length(.packages[!.inst]) > 0) install.packages(.packages[!.inst], repos='http://cran.us.r-project.org', dependencies = TRUE)
+
+ # Load packages into session
+ lapply(.packages, require, character.only=TRUE)
+
+
+#testing sp.list[1:5]
+
+ensemble_smd(this.species,raster.name,thissamplearea,raster.path,rasters.selected, sdm.dir, ocean.shp)
+
+
+}
+
+#}
+
+stopCluster(cl)
+
+system("az vm deallocate --name atlantisserver06 --no-wait --resource-group morzariacedogroup")
+
+
+```
+
+Estimate ensemble models, biooracle rasters
+
+```{r get_esmd, message=TRUE, warning=TRUE, include=FALSE}
+
+thissamplearea <- "pacific"
+
+sp.list <- read_csv(paste0(thissamplearea,"_occ_thinned.csv")) %>% 
+  group_by(species) %>% 
+  summarise(no_records = n()) %>% 
+  filter(no_records > 20) %>% 
+  arrange(no_records) %>% 
+  .$species
+
+
+#sp.list <- list.files(path=paste("~/conapescaspecies/thindata",thissamplearea,sep="_"), pattern = "*.*txt$") %>% 
+#  gsub("_thinned_full_log_file.txt","",.)
+
+
+NumberOfCluster <- detectCores() - 4
+cl <- makeCluster(NumberOfCluster)
+registerDoSNOW(cl)
+ 
+clusterExport(cl, c("ensemble_smd"))
+
+raster.path ="~/conapescaspecies/biooracle_asc/"
+
+thissamplearea <- "pacific"
+
+raster.name = "biooracle"
+
+sdm.dir <- paste0("/home/atlantis/conapescaspecies/sdm_",thissamplearea,"_",raster.name)
+dir.create(sdm.dir)
+
+raster.sel.list <- read_csv(file=paste(thissamplearea,raster.name,"rasters_selected.csv",sep="_")) %>% 
+      pull(x) %>% 
+      paste(.,".asc",sep="") %>% 
+      paste(raster.path,., sep="")
+    
+rasters.selected <- stack(raster.sel.list)
+    
+projection(rasters.selected) <-CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")  # geographical, datum WGS84
+    
+ocean.shp <- readOGR("ne_10m_ocean.shp")
+
+ sp.esdm <- foreach(this.species=sp.list, .verbose = T, .export = c("raster.path","thissamplearea","raster.name","sdm.dir","ocean.shp")) %dopar% {
+
+
+ .packages <- (c("tidyverse","raster","SSDM","cowplot"))
+
+ # Install CRAN packages (if not already installed)
+
+ if(!require(SSDM)){
+      devtools::install_github("sylvainschmitt/SSDM")
+
+ }
+
+ .inst <- .packages %in% installed.packages()
+ if(length(.packages[!.inst]) > 0) install.packages(.packages[!.inst], repos='http://cran.us.r-project.org', dependencies = TRUE)
+
+ # Load packages into session
+ lapply(.packages, require, character.only=TRUE)
+
+
+#testing sp.list[1:5]
+
+ensemble_smd(this.species,raster.name,thissamplearea,raster.path,rasters.selected, sdm.dir, ocean.shp)
+
+
+}
+
+#}
+
+stopCluster(cl)
+
+system("az vm deallocate --name atlantisserver06 --no-wait --resource-group morzariacedogroup")
+
+
+```
+
+
+#calculate areas with higher model uncertainty
+```{r}
+
+sp.list <- list.files(path="~/conapescaspecies/sdm_pacific_observed/", pattern = "uncertainty.tif$", full.names = TRUE, recursive = TRUE) 
+
+tot.raster <- raster(sp.list[1])
+
+
+for(this.file in 2:length(sp.list)){
+
+  raster.name <- sp.list[this.file]
+  print(raster.name)
+    
+  this.raster <- raster(raster.name)
+  
+  tot.raster <- this.raster + tot.raster
+  
+}
+
+norm.tot.raster <- normImage(tot.raster, norm=FALSE)
+
+norm.tot.raster <- raster.transformation(tot.raster, trans = "norm", smin = 0, smax = 255)
+
+raster.plot <- ggplot() +
+  geom_raster(data = norm.tot.raster , aes(x = x, y = y, fill = layer)) + 
+  scale_fill_viridis_c(na.value="gray66")+
+  coord_quickmap()
+
+
+  ggsave("uncertainty_summary_observed.png", raster.plot, device ="png", dpi=300)
+
+```
+
+
+
+#calculate areas with higher probability
+```{r}
+
+sp.list <- list.files(path="~/conapescaspecies/sdm_pacific_observed/", pattern = "Probability.tif$", full.names = TRUE, recursive = TRUE) 
+
+tot.raster <- raster(sp.list[1])
+
+
+for(this.file in 2:length(sp.list)){
+
+  raster.name <- sp.list[this.file]
+  print(raster.name)
+    
+  this.raster <- raster(raster.name)
+  
+  tot.raster <- this.raster + tot.raster
+  
+}
+
+norm.tot.raster <- normImage(tot.raster, norm=FALSE)
+
+norm.tot.raster <- raster.transformation(tot.raster, trans = "norm", smin = 0, smax = 255)
+
+writeRaster(norm.tot.raster,file="combined_raster_probability", format="ascii")
+
+raster.plot <- ggplot() +
+  geom_raster(data = norm.tot.raster , aes(x = x, y = y, fill = layer)) + 
+  scale_fill_viridis_c(na.value="gray66")+
+  coord_quickmap()
+
+
+  ggsave("probability_summary_observed.png", raster.plot, device ="png", dpi=300)
+
+```
+
+
+Predict using future probability layers GFDL
+
+```{r}
+
+sp.list <- read_csv("pacific_occ_thinned.csv") %>% 
+  group_by(species) %>% 
+  summarise(no_records = n()) %>% 
+  filter(no_records > 100) %>% 
+  arrange(no_records) %>% 
+  .$species
+
+#sp.list <- list.files(path=paste("~/conapescaspecies/thindata",thissamplearea,sep="_"), pattern = "*.*txt$") %>% 
+#  gsub("_thinned_full_log_file.txt","",.)
+
+
+NumberOfCluster <- detectCores() - 2
+cl <- makeCluster(NumberOfCluster)
+registerDoSNOW(cl)
+ 
+clusterExport(cl, c("ensemble_smd"))
+
+raster.path ="~/conapescaspecies/rasters/pacific_gfdl/"
+
+thismodel = "GFDL"
+thissamplearea <- "pacific"
+
+raster.name = "observed"
+
+sdm.dir <- paste0("/home/atlantis/conapescaspecies/sdm_",thissamplearea,"_",raster.name)
+
+raster.sel.list <- read_csv(file=paste(thissamplearea,raster.name,"rasters_selected.csv",sep="_")) %>% 
+      pull(x) %>% 
+      gsub("[.]","-",.) %>% 
+      paste(.,".asc",sep="") %>% 
+      paste(raster.path,., sep="")
+    
+rasters.selected <- stack(raster.sel.list)
+    
+projection(rasters.selected) <-CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")  # geographical, datum WGS84
+    
+ocean.shp <- readOGR("ne_10m_ocean.shp")
+
+ sp.esdm <- foreach(this.species=sp.list, .verbose = T, .export = c("raster.path","thissamplearea","raster.name","sdm.dir","ocean.shp","rasters.selected","thismodel")) %dopar% {
+
+
+ .packages <- (c("tidyverse","raster","SSDM","cowplot"))
+
+ # Install CRAN packages (if not already installed)
+
+ if(!require(SSDM)){
+      devtools::install_github("sylvainschmitt/SSDM")
+
+ }
+
+ .inst <- .packages %in% installed.packages()
+ if(length(.packages[!.inst]) > 0) install.packages(.packages[!.inst], repos='http://cran.us.r-project.org', dependencies = TRUE)
+
+ # Load packages into session
+ lapply(.packages, require, character.only=TRUE)
+
+
+#testing sp.list[1:5]
+
+ensemble_project(this.species,raster.name,thissamplearea,raster.path,rasters.selected, sdm.dir, ocean.shp, thismodel)
+
+
+}
+
+#}
+
+stopCluster(cl)
+
+system("az vm deallocate --name atlantisserver06 --no-wait --resource-group morzariacedogroup")
+
+
+```
+
+Predict using future probability layers MPI
+
+```{r}
+
+sp.list <- read_csv("pacific_occ_thinned.csv") %>% 
+  group_by(species) %>% 
+  summarise(no_records = n()) %>% 
+ # filter(no_records > 100) %>% 
+  arrange(no_records) %>% 
+  .$species
+
+#sp.list <- list.files(path=paste("~/conapescaspecies/thindata",thissamplearea,sep="_"), pattern = "*.*txt$") %>% 
+#  gsub("_thinned_full_log_file.txt","",.)
+
+
+NumberOfCluster <- detectCores() - 1
+cl <- makeCluster(NumberOfCluster)
+registerDoSNOW(cl)
+ 
+clusterExport(cl, c("ensemble_smd"))
+
+raster.path ="~/conapescaspecies/rasters/pacific_mpi/"
+
+thismodel = "MPI-ESM"
+thissamplearea <- "pacific"
+
+raster.name = "observed"
+
+sdm.dir <- paste0("/home/atlantis/conapescaspecies/sdm_",thissamplearea,"_",raster.name)
+
+raster.sel.list <- read_csv(file=paste(thissamplearea,raster.name,"rasters_selected.csv",sep="_")) %>% 
+      pull(x) %>% 
+      gsub("[.]","-",.) %>% 
+      paste(.,".asc",sep="") %>% 
+      paste(raster.path,., sep="")
+    
+rasters.selected <- stack(raster.sel.list)
+    
+projection(rasters.selected) <-CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")  # geographical, datum WGS84
+    
+ocean.shp <- readOGR("ne_10m_ocean.shp")
+
+ sp.esdm <- foreach(this.species=sp.list, .verbose = T, .export = c("raster.path","thissamplearea","raster.name","sdm.dir","ocean.shp","rasters.selected","thismodel")) %dopar% {
+
+
+ .packages <- (c("tidyverse","raster","SSDM","cowplot"))
+
+ # Install CRAN packages (if not already installed)
+
+ if(!require(SSDM)){
+      devtools::install_github("sylvainschmitt/SSDM")
+
+ }
+
+ .inst <- .packages %in% installed.packages()
+ if(length(.packages[!.inst]) > 0) install.packages(.packages[!.inst], repos='http://cran.us.r-project.org', dependencies = TRUE)
+
+ # Load packages into session
+ lapply(.packages, require, character.only=TRUE)
+
+
+#testing sp.list[1:5]
+
+ensemble_project(this.species,raster.name,thissamplearea,raster.path,rasters.selected, sdm.dir, ocean.shp,thismodel)
+
+
+}
+
+#}
+
+stopCluster(cl)
+
+system("az vm deallocate --name atlantisserver06 --no-wait --resource-group morzariacedogroup")
+
+
+```
+
+
+
+#calculate areas with higher model probability under future climate change
+```{r}
+
+sp.list <- list.files(path="~/conapescaspecies/sdm_pacific_observed/", pattern = "projection.asc$", full.names = TRUE, recursive = TRUE) 
+
+tot.raster <- raster(sp.list[1])
+
+
+for(this.file in 2:length(sp.list)){
+
+  raster.name <- sp.list[this.file]
+  print(raster.name)
+    
+  this.raster <- raster(raster.name)
+  
+  tot.raster <- this.raster + tot.raster
+  
+}
+
+norm.tot.raster <- normImage(tot.raster, norm=FALSE)
+
+norm.tot.raster <- raster.transformation(tot.raster, trans = "norm", smin = 0, smax = 255)
+
+writeRaster(norm.tot.raster,file="combined_raster_projection", format="ascii")
+
+
+raster.plot <- ggplot() +
+  geom_raster(data = norm.tot.raster , aes(x = x, y = y, fill = layer)) + 
+  scale_fill_viridis_c(na.value="gray66")+
+  coord_quickmap()
+
+
+  ggsave("projection_summary_observed.png", raster.plot, device ="png", dpi=300)
+
+```
+
+
+
+```{r}
+
+proj.raster <- raster("combined_raster_projection.asc")
+
+
+prob.raster <- raster("combined_raster_probability.asc")
+
+
+diff.raster <- prob.raster - proj.raster
+
+norm.tot.raster <- raster.transformation(diff.raster, trans = "norm", smin = 0, smax = 255)
+
+raster.plot <- ggplot() +
+  geom_raster(data = norm.tot.raster , aes(x = x, y = y, fill = layer)) + 
+  scale_fill_viridis_c(na.value="gray66")+
+  coord_quickmap()
+
+
+  ggsave("difference_summary_observed.png", raster.plot, device ="png", dpi=300)
+
+```
+
+
+
+

@@ -1,0 +1,736 @@
+---
+title: "Species records fisheries data"
+output: html_notebook
+---
+
+This notebook updates the code to get species records, based on a list of species from CONAPESCA, the fisheries Atlas and the Carta Nacional Pesquera
+```{r load libraries, include=FALSE}
+source("libraries_occ.R")
+source("check_taxonomy.R")
+source("get_idigibio_sp.R")
+source("get_bison_sp.R")
+source("get_gbif_sp.R")
+source("get_point.R")
+
+
+```
+
+
+Get common and species names from CONAPESCA catch records
+```{r get CONAPESCA, echo=FALSE}
+datapath <- "~/conapescaspecies/catchdata"
+workpath <- "~/conapescaspecies" #put path
+datafiles <- "~/conapescaspecies/Data"
+
+setwd(workpath)
+
+conapesca.sp <- fread("Atlas_CICIMAR_Ramirez_rev.csv",encoding = "Latin-1") %>% 
+  as_tibble %>% 
+  dplyr::select(common_name, species) %>% 
+  setNames(c("nombre_comun","nombre_cientifico")) %>% 
+  filter(!is.na(nombre_cientifico)) %>% 
+  mutate(nombre_comun=tolower(nombre_comun), nombre_cientifico=tolower(nombre_cientifico)) %>% 
+  mutate(nombre_comun=trimws(nombre_comun),nombre_cientifico=trimws(nombre_cientifico)) %>% 
+  distinct(nombre_comun,nombre_cientifico)
+  
+
+small.scale <- list.files(path = datapath, pattern="CONSULTA *.*", full.names = TRUE)
+
+
+get_species <- function(this.sheet){
+  
+  print(this.sheet)
+  
+  this.data <- fread(this.sheet, header = T, encoding = "Latin-1") %>% 
+    as_tibble()
+  
+ these.names <- this.data %>% 
+    dplyr::select(contains("COMUN"),contains("CIENTIFICO")) %>% 
+    setNames(c("nombre_comun","nombre_cientifico")) %>% 
+    distinct(nombre_comun,nombre_cientifico)
+ 
+ return(these.names)
+}
+
+
+get.species2 <- function(this.sheet){
+  
+  print(this.sheet)
+  
+  this.data <- read_xlsx("CONAPESCA_IFAI_Pacifico.xlsx", sheet=this.sheet)
+  
+  these.names <- this.data %>% 
+    dplyr::select(contains("NOMBRE COM")) %>% 
+    setNames("nombre_comun") %>% 
+    filter(!grepl("DE CULTIVO|RANA ",nombre_comun)) %>% 
+    filter(!grepl("DE AGUA DULCE",nombre_comun)) %>% 
+    filter(!grepl(" SINTETICO| DE VIVERO",nombre_comun)) %>% 
+    mutate(nombre_comun_rev= gsub(" S.C. FCA.| S.C. FCO.| DESV. FCO.| DESV. FCA| FILETE DE FCO.| DESV. Y DESC. FCO.| DESV. Y DESC. FCO| DESC. FCO.| ENT. COCIDA| PULPA FCA. DE| ALETA FCA.| CARNE SECA| CARNE FCA.| ENT. SECO| ALETA DE FCA.| ENT. COCIDO| DESC. Y| PIEL DE| FCO.| CONCHA DE| ALETA DE| FILETE SECO| SECA|[.]| SECO| DESC| COLAS DE FCA| MANTODE| MANTODE| FILETE DE SECO| COLAS DE| DESV DESC FCA| DESV Y DESC FC| TRIPA DE| DESV Y DESC| CARNE DE| VIVO| S/MANTO ","",nombre_comun)) %>% 
+    mutate(nombre_comun_rev= gsub("TENTACULOS DE| DESC PTO| COCIDO| CARNE DE SECA| MANOS DE| DESV. DESC. FCO.| DESV. Y DESC. FCA.| DESC. FCO.| CARNE DE FCA.| DESC. SECO| ENT. FCO.| ENT. FCA.| ENTFCA| ENTFCO| VIVITA CARNADA| COCIDAS| PULPA DE FCA| DESV, DESC FCO| DESC COCIDO| CABEZA DE| PULPA FCO.| ALETA DE SECA| S/C FCO.| FILETE FCO.| PIEL DE| HUEVA DE| ENT FCA| P/CARNADA| MANTODE| DESV FCA| DESV Y FC| DESV Y| ENTFCO| DESV| S/C| FILETE| ENT| ALETA CARTON DESV. Y DESC.| TENTACULOS DE| DESV, FCO| DESV| ALETA DE| COCIDO| TUBO DE| FCO| POLVO DE| FCA| DESC PTO| FRESCO| COCIDA| AVISOS|","",nombre_comun_rev)) %>% 
+    mutate(nombre_comun_rev= gsub("AA","A",nombre_comun_rev)) %>% 
+    mutate(nombre_comun_rev= gsub("ROJOFCO","ROJO",nombre_comun_rev)) %>% 
+    mutate(nombre_comun_rev= gsub("MERLUZAFCA","MERLUZA",nombre_comun_rev)) %>% 
+    mutate(nombre_comun_rev= gsub("MANTARRAYASECA","MANTARRAYA",nombre_comun_rev)) %>% 
+    #mutate(nombre_comun_rev= gsub(" \\(.*\\)", "",nombre_comun_rev)) %>% 
+    distinct(nombre_comun_rev) %>% 
+    setNames("nombre_comun") %>% 
+    arrange(nombre_comun) 
+  
+  print(paste("Number of records",nrow(these.names)))
+  
+  return(these.names)
+  
+}
+
+conapesca.species.anuario <- lapply(small.scale,get_species) %>% 
+  bind_rows %>% 
+  mutate(nombre_comun=trimws(nombre_comun),nombre_cientifico=trimws(nombre_cientifico)) %>% 
+  distinct(nombre_comun,nombre_cientifico) %>% 
+  mutate(nombre_comun=tolower(nombre_comun), nombre_cientifico=tolower(nombre_cientifico))
+  
+ifai.sheets <- excel_sheets("CONAPESCA_IFAI_Pacifico.xlsx") %>% 
+  length %>% 
+  1:.
+
+conapesca.2016.species <- lapply(ifai.sheets,get.species2) %>% 
+  bind_rows
+
+conapesca.species.list <- conapesca.2016.species %>% 
+  distinct(nombre_comun) %>% 
+  left_join(conapesca.species.anuario, by="nombre_comun") %>% 
+  bind_rows(conapesca.species.anuario)  %>% 
+  mutate(nombre_comun= gsub("\\(","",nombre_comun)) %>%
+  mutate(nombre_comun= gsub("\\)","",nombre_comun)) %>%
+  mutate(nombre_comun= gsub(" ind$","",nombre_comun)) %>%
+  mutate(nombre_comun= gsub(" se$","",nombre_comun)) %>%
+  mutate(nombre_cientifico=if_else(nombre_cientifico %in% c(0,"#n/a"),"",nombre_cientifico)) %>% 
+  mutate(nombre_cientifico=gsub(" sp$","",nombre_cientifico), nombre_cientifico=gsub(" spp$","",nombre_cientifico)) %>% 
+  mutate(nombre_cientifico=gsub(" sp\\.$","",nombre_cientifico), nombre_cientifico=gsub(" spp\\.$","",nombre_cientifico)) %>%
+  mutate(word_count = stri_count(nombre_cientifico,regex="\\S+")) %>% 
+  mutate(nombre_cientifico=if_else(word_count == 1, NA_character_, nombre_cientifico)) %>% 
+  mutate(nombre_comun=trimws(nombre_comun), nombre_comun=tolower(nombre_comun)) %>%
+  distinct(nombre_comun,nombre_cientifico) 
+
+conapesca.species.taxa <- conapesca.species.list %>%
+  filter(is.na(nombre_cientifico)) %>% 
+  distinct(nombre_comun) %>% 
+  left_join(conapesca.species.list, by="nombre_comun") %>% 
+   bind_rows(conapesca.species.list) 
+  
+atlas.sp <- conapesca.species.taxa %>% 
+  filter(is.na(nombre_cientifico)) %>% 
+  dplyr::select(nombre_comun) %>% 
+  left_join(conapesca.sp, by="nombre_comun") %>% 
+  distinct(nombre_comun,nombre_cientifico) 
+
+conapesca.identified <- conapesca.species.taxa %>% 
+  bind_rows(atlas.sp) %>% 
+  distinct(nombre_comun,nombre_cientifico) %>% 
+  filter(!is.na(nombre_cientifico))
+  
+missing.sp <- conapesca.species.list %>% 
+  filter(is.na(nombre_cientifico)) %>% 
+  distinct(nombre_comun) %>% 
+  left_join(conapesca.identified, by="nombre_comun") %>% 
+filter(is.na(nombre_cientifico))
+
+list.missing <- missing.sp %>% 
+  pull(nombre_comun)
+
+find_missing <- function(eachmissing, conapesca.identified){
+  
+  print(eachmissing)
+  
+  matched.table <- conapesca.identified %>% 
+    filter(grepl(eachmissing, nombre_comun)) %>% 
+    filter(!is.na(nombre_cientifico)) %>% 
+    mutate(nombre_original = eachmissing) %>% 
+    dplyr::select(nombre_original, everything())
+  
+  matched.table.atlas <- conapesca.sp %>% 
+    filter(grepl(eachmissing, nombre_comun)) %>% 
+    filter(!is.na(nombre_cientifico)) %>% 
+    mutate(nombre_original = eachmissing) %>% 
+    dplyr::select(nombre_original, everything())
+  
+  all.matched <- matched.table %>% 
+    bind_rows(matched.table.atlas) %>% 
+    distinct(nombre_original,nombre_comun,nombre_cientifico)
+    
+  return(all.matched)
+    
+}
+
+missing.id <- lapply(list.missing, find_missing, conapesca.identified) %>% 
+  bind_rows
+  
+
+not.found <- missing.sp %>% 
+  distinct(nombre_comun) %>% 
+  dplyr::rename(nombre_original=nombre_comun) %>% 
+  left_join(missing.id, by="nombre_original") %>% 
+  filter(is.na(nombre_comun)) %>% 
+  distinct(nombre_original) 
+  
+#this didn't work, responses are too general
+# find_fishbase <- function(eachnotfound){
+#   
+#   print(eachnotfound)
+#   
+# sci.fishbase <- common_to_sci(eachnotfound, Language = "Spanish") %>% 
+#   mutate(nombre_original=eachnotfound)
+# 
+# print(sci.fishbase)
+# return(sci.fishbase)
+# 
+# }
+# 
+# fishbase.res <- lapply(not.found, find_fishbase) %>% 
+#   bind_rows
+
+setwd(workpath)
+#this file was saved and checked manually
+write_csv(missing.id,"conapesca_especies_faltantes.csv")
+
+write_csv(conapesca.identified,"conapesca_identified.csv")
+
+not.found  
+write_csv(not.found, "conapesca_no_encontradas.csv")
+```
+
+
+List of species from COANPESCA was reviwed manually and updated
+
+```{r}
+
+atlas.sp <- fread("Atlas_CICIMAR_Ramirez_rev.csv",encoding = "Latin-1") %>% 
+  as_tibble %>% 
+  dplyr::select(common_name, species) %>% 
+  setNames(c("nombre_comun","nombre_cientifico")) %>% 
+  filter(!is.na(nombre_cientifico)) %>% 
+  mutate(nombre_comun=tolower(nombre_comun), nombre_cientifico=tolower(nombre_cientifico)) %>% 
+  mutate(nombre_comun=trimws(nombre_comun),nombre_cientifico=trimws(nombre_cientifico)) %>% 
+  distinct(nombre_comun,nombre_cientifico)
+
+carta.sp <- read_xlsx("Carta_nacional_pesquera.xlsx", sheet = 1) %>% 
+   setNames(c("nombre_comun","nombre_cientifico")) %>% 
+   filter(!is.na(nombre_cientifico)) %>% 
+  mutate(nombre_comun=tolower(nombre_comun), nombre_cientifico=tolower(nombre_cientifico)) %>% 
+  mutate(nombre_comun=trimws(nombre_comun),nombre_cientifico=trimws(nombre_cientifico)) %>% 
+  distinct(nombre_comun,nombre_cientifico)
+
+conapesca.identified <- fread("conapesca_identified_rev.csv", encoding = "Latin-1") %>% 
+  as_tibble
+
+conapesca.missing <- fread("conapesca_especies_faltantes_rev.csv", encoding = "Latin-1") %>% 
+  as_tibble %>% 
+  dplyr::select(-nombre_comun) %>% 
+  dplyr::rename(nombre_comun=nombre_original)%>% 
+    distinct(nombre_comun,nombre_cientifico)
+
+conapesca.found <- fread("conapesca_no_encontradas_rev.csv", encoding = "Latin-1") %>% 
+  as_tibble %>% 
+  setNames(c("nombre_comun","nombre_cientifico")) %>% 
+  mutate(nombre_comun=tolower(nombre_comun), nombre_cientifico=tolower(nombre_cientifico)) %>% 
+  mutate(nombre_comun=trimws(nombre_comun),nombre_cientifico=trimws(nombre_cientifico)) %>% 
+  filter(!is.na(nombre_cientifico)) %>% 
+  distinct(nombre_comun,nombre_cientifico)
+
+conapesca.clean <- conapesca.identified %>% 
+  bind_rows(conapesca.missing, conapesca.found) %>% 
+  mutate(nombre_cientifico=gsub("spp$","",nombre_cientifico)) %>% 
+  filter(!nombre_cientifico=="buenoa sp y noctoneta") %>% 
+  mutate(w_count = stri_count(nombre_cientifico,regex="\\S+")) %>% 
+  filter(!w_count==1) %>% 
+  dplyr::select(-w_count) %>% 
+  distinct(nombre_comun,nombre_cientifico)
+
+
+conapesca.all.sp <- atlas.sp %>% 
+  bind_rows(conapesca.clean) %>% 
+  bind_rows(carta.sp) %>% 
+  distinct(nombre_cientifico) %>% 
+  arrange(nombre_cientifico) %>% 
+ #  mutate(w_count = stri_count(nombre_cientifico,regex="\\S+")) %>% 
+  mutate(nombre_cientifico=if_else(nombre_cientifico=="pescara stereolepis gigas","stereolepis gigas",
+                                   if_else(nombre_cientifico=="chirostoma estor estor","chirostoma estor",
+                                           if_else(nombre_cientifico=="cyprinus carpio rubrofuscus","cyprinus rubrofuscus",
+                                                   if_else(nombre_cientifico=="cyprinus carpio specularis","cyprinus carpio",nombre_cientifico)))))
+
+
+write_csv(conapesca.all.sp,"final_species_list_conapesca.csv")
+
+
+```
+
+Check taxonomic validity of names reviewed manually and get synonyms
+
+
+```{r}
+
+#this list was reviewed manually to eliminate misspellings
+
+conapesca.all.sp <- fread("final_species_list_conapesca_rev.csv",encoding = "Latin-1", sep=",") %>% 
+  as_tibble %>% 
+  mutate(nombre_cientifico = trimws(nombre_cientifico)) %>% 
+  pull(nombre_cientifico)
+
+worms.taxonomy <- lapply(conapesca.all.sp, check_worms)
+
+itis.taxonomy <- lapply(conapesca.all.sp, check_itis)
+
+
+syn.file.list <- list.files(path = "/home/atlantis/conapescaspecies/synonym_res/",pattern="synonyms_*.*csv", full.names = TRUE)
+
+combine_files <- function(thisfile){
+  
+  print(thisfile)
+  
+  this.data <- read_csv(thisfile)
+  
+  return(this.data)
+  
+  # file.segment <- str_split(thisfile, "//") %>% 
+  #   unlist %>% 
+  #   .[2]
+  # 
+  # newfile <- paste0("/home/atlantis/conapescaspecies/synonym_res/",file.segment,".csv")
+  # 
+  # file.rename(thisfile,newfile)
+  
+  
+}
+
+syn.names <- lapply(syn.file.list, combine_files) %>% 
+  bind_rows()
+
+names.goc <- syn.names %>% 
+  mutate(synonym=tolower(synonym),old_name=tolower(old_name),valid_name=tolower(valid_name)) %>% 
+  distinct(synonym,old_name,valid_name) 
+
+write_csv(names.goc, "species_synonyms_all.csv")
+
+```
+
+```{r}
+
+names.goc <- read_csv("species_synonyms_all.csv")
+
+syn.col <- names.goc %>% 
+  dplyr::select(synonym) %>% 
+  setNames("old_name")
+
+valid.col <- names.goc %>% 
+  dplyr::select(valid_name) %>% 
+  setNames("old_name")
+
+names.list <- names.goc %>% 
+  dplyr::select(old_name) %>% 
+   bind_rows(syn.col, valid.col) %>% 
+  distinct(old_name)
+
+write_csv(names.list, "distinct_taxonomic_names.csv")
+
+taxa.names <- names.list %>% 
+  pull(old_name)
+```
+
+
+```{r}
+
+datapath <- "~/conapescaspecies/biodiverdata"
+
+
+site.list = c(165,132,239,144,145) # 144 Gulf of Mexico, 132 California Current, 145 Caribbean
+region.list = c("Gulf of California","California Current", "Pacific Central-American Coastal","Gulf of Mexico","Caribbean")
+
+site.no <- 1:length(site.list)
+
+mirror <- "https://www.fishbase.de" # "http://www.fishbase.org"
+
+get_fishbase <- function(this.site.no, site.list, region.list){
+  
+     this.site <- site.list[this.site.no]
+  
+     this.region <- region.list[this.site.no]
+    
+     print(this.site)
+     print(this.region)
+  
+      this.link <- paste(mirror,"/map/EcosystemOccurrencesList.php?e_code=",this.site,sep="")
+      fishbase.data <- getURL(this.link) %>% readHTMLTable()
+    
+      biodiversity.table <- fishbase.data %>% 
+        .$dataTable %>% 
+        tbl_df 
+      
+      print(head(biodiversity.table))
+      
+      
+      return(biodiversity.table) 
+}
+
+
+fishbase.data <- lapply(site.no, get_fishbase, site.list, region.list)
+
+fishbase.table <- fishbase.data %>% 
+      bind_rows %>% 
+      dplyr::select(2,6,5) %>% 
+      mutate(source = "fishbase") %>% 
+      setNames(c("species","lon","lat","source")) %>% 
+      mutate(species=tolower(species)) %>% 
+      #eliminate empty spaces and duplicate records
+      mutate_each(funs(gsub("^$|^ $", NA, .))) %>% 
+      na.omit %>% 
+      distinct(species, lat, lon, source)
+
+
+write_csv(fishbase.table,file="~/conapescaspecies/biodiverdata/record_queries_fishbase.csv")
+
+
+```
+
+
+Get distinct taxonomic names revised
+
+```{r}
+
+
+#set polygon area for record retrieval
+areapolygon <- "POLYGON((-130.00 40.00, -50.00 40.00, -50.00 -10.00, -130.00 -10.00, -130.00 40.00))"
+
+#names were revised manually
+
+names.list <- read_csv("distinct_taxonomic_names_rev.csv")
+
+sp.list <- names.list %>% 
+  distinct(old_name) %>% 
+  mutate(old_name=trimws(old_name)) %>% 
+  arrange(old_name) %>% 
+  pull(old_name)
+
+
+#' iDigBio
+
+lapply(sp.list, get_idigibio_sp)
+
+idigbio.files <- list.files(path="~/conapescaspecies/biodiverdata/data_files/", pattern="*.*idigibio.csv",  full.names = TRUE)
+
+idigbio.sp <- lapply(idigbio.files, read_csv) %>% 
+  bind_rows %>% 
+  distinct(submitted_name, species, lat, lon, source) %>% 
+  na.omit 
+
+write_csv(idigbio.sp, path="~/conapescaspecies/biodiverdata/record_queries_idigibio.csv")
+
+
+
+#' Bison
+
+lapply(sp.list, get_bison_sp, areapolygon)
+
+bison.files <- list.files(path="~/conapescaspecies/biodiverdata/data_files/", pattern="*.*bison.csv",  full.names = TRUE)
+
+bison.sp <- lapply(bison.files, read_csv) %>% 
+  bind_rows %>% 
+  distinct(submitted_name, species, lat, lon, source) %>% 
+  na.omit 
+
+write_csv(bison.sp, path="~/conapescaspecies/biodiverdata/record_queries_bison.csv")
+
+
+#extract data gbif using their API----
+#' gbif needs list of species without the synonyms
+#' because it takes species and retrieves key numbers which include synonyms
+
+
+#' GBIF
+#GBIF expects counter-clockwise winding order for WKT. You can supply clockwise WKT, but GBIF treats it as an exclusion, so you get all data not inside the WKT area.
+
+#set polygon area for record retrieval
+cc_areapolygon <- "POLYGON((-130.00 40.00, -130.00 -10.00, -50.00 -10.00, -50.00 40.00, -130.00 40.00))"
+
+
+names.goc <- read_csv("species_synonyms_all.csv") %>% 
+  distinct(valid_name) %>% 
+  pull(valid_name)
+
+mclapply(names.goc, get_gbif_sp, cc_areapolygon)
+
+gbif.files <- list.files(path="~/conapescaspecies/biodiverdata/data_files/", pattern="*.*gbif.csv", full.names = TRUE)
+
+gbif.sp <- lapply(gbif.files, read_csv) %>% 
+  bind_rows %>% 
+  distinct(submitted_name, species, lat, lon, source) %>% 
+  na.omit 
+
+write_csv(gbif.sp, path="~/conapescaspecies/biodiverdata/record_queries_gbif.csv")
+
+
+#OBIS
+
+#set polygon area for record retrieval
+areapolygon <- "POLYGON((-130.00 40.00, -50.00 40.00, -50.00 -10.00, -130.00 -10.00, -130.00 40.00))"
+
+mclapply(sp.list, get_obis_sp, areapolygon)
+
+obis.files <- list.files(path="~/conapescaspecies/biodiverdata/data_files/", pattern="*.*obis.csv", full.names = TRUE)
+
+obis.sp <- lapply(obis.files, read_csv) %>% 
+  bind_rows %>% 
+  distinct(submitted_name, species, lat, lon, source) %>% 
+  na.omit 
+
+write_csv(obis.sp, path="~/conapescaspecies/biodiverdata/record_queries_obis.csv")
+
+
+#Vertnet
+
+lapply(sp.list, get_vertnet_sp)
+
+vertnet.files <- list.files(path="~/conapescaspecies/biodiverdata/data_files/", pattern="*.*vertnet.csv", full.names = TRUE)
+
+read_data <- function(this.file){
+
+  data.file <- read_csv(this.file) %>%
+    mutate(lon = as.double(lon)) %>% 
+    mutate(lat = as.double(lat))
+  
+  return(data.file)
+  
+}
+  
+vertnet.sp <- lapply(vertnet.files, read_data) %>% 
+  bind_rows %>% 
+  distinct(submitted_name, species, lat, lon, source) %>% 
+  na.omit 
+
+write_csv(vertnet.sp, path="~/conapescaspecies/biodiverdata/record_queries_vertnet.csv")
+
+
+#XLS data
+xlsx.files <- list.files(path="~/conapescaspecies/data", pattern = "\\.xlsx$", full.names = TRUE)# list files
+
+
+biodiversity.xls <- lapply(xlsx.files, get_xls)
+
+xlsx.sp <- biodiversity.xls %>% 
+  bind_rows %>% 
+  distinct(species, lat, lon, source) %>% 
+  na.omit %>% 
+  mutate(submitted_name= species) 
+
+write_csv(xlsx.sp, path="~/conapescaspecies/biodiverdata/record_queries_xlsx.csv")
+
+
+#csv data
+
+
+csv.files <- list.files(path="~/conapescaspecies/data", pattern = "^ulloa*", full.names = TRUE)# list files
+
+
+biodiversity.csv <- lapply(csv.files, get_csv)
+
+ulloa.sp <- biodiversity.csv %>% 
+  bind_rows %>% 
+  distinct(species, lat, lon, source) %>% 
+  na.omit %>% 
+  mutate(species = tolower(species)) %>% 
+#  filter(species %in% species_list) %>% 
+  mutate(submitted_name= species)
+
+write_csv(ulloa.sp, path="~/conapescaspecies/biodiverdata/record_queries_ulloa.csv")
+
+
+
+#' CONABIO data
+
+conabio.sp <- list.files(path="~/conapescaspecies/data", pattern = glob2rx("SNIB*.txt"), full.names = TRUE)%>% 
+  fread(header=FALSE) %>% 
+  as_tibble %>% 
+  dplyr::select(V5, V6, V7, V8) %>% 
+  mutate(source="conabio") %>% 
+  mutate(species=paste(V5,V6,sep=" ")) %>% 
+  dplyr::select(species,V7,V8,source) %>% 
+  setnames(c("species","lon","lat","source")) %>% 
+  distinct(species, lon, lat, source) %>% 
+  na.omit %>% 
+  mutate(species=if_else(species=="Hydrolithon samo\xebnse","Hydrolithon samoense",species)) %>% 
+  mutate(species=if_else(species=="Perissono\xeb cruciata","Perissono cruciata",species)) %>% 
+  mutate(species=if_else(species=="Terpsino\xeb americana", "Terpsinoe americana",species)) %>% 
+  mutate(species=if_else(species=="Terpsino\xeb musica", "Terpsinoe musica",species)) %>% 
+  mutate(species = tolower(species)) %>% 
+  mutate(submitted_name= species) %>% 
+  dplyr::select(submitted_name, species, lat, lon, source)
+
+write_csv(conabio.sp, path="~/conapescaspecies/biodiverdata/record_queries_conabio.csv")
+
+
+#Seamap
+
+seamap.sp <- list.files(path="~/conapescaspecies/data", pattern="SEAMAP.csv", full.names = TRUE) %>% 
+  read_csv %>% 
+  distinct(sname, latitude, longitude) %>% 
+  mutate(submitted_name = tolower(sname), source="seamap") %>% 
+  dplyr::rename(species=sname, lat=latitude, lon=longitude)
+  
+write_csv(seamap.sp, path="~/conapescaspecies/biodiverdata/record_queries_seamap.csv")
+
+
+#corals
+coral.sp <- list.files(path="~/conapescaspecies/data", pattern="Hexacorallia_of_the_world.csv", full.names = TRUE) %>% 
+  read_csv %>% 
+  distinct(sname, latitude, longitude) %>% 
+  mutate(submitted_name = tolower(sname), source="corals") %>% 
+  dplyr::rename(species=sname, lat=latitude, lon=longitude)
+ 
+  
+write_csv(coral.sp, path="~/conapescaspecies/biodiverdata/record_queries_coral.csv")
+
+#OldFishbase
+fishbase2.sp <- list.files(path="~/conapescaspecies/data", pattern="FishBase.csv", full.names = TRUE) %>% 
+  read_csv %>% 
+  distinct(sname, latitude, longitude) %>% 
+  mutate(submitted_name = tolower(sname), source="fishbase") %>% 
+  dplyr::rename(species=sname, lat=latitude, lon=longitude)
+ 
+  
+write_csv(fishbase2.sp, path="~/conapescaspecies/biodiverdata/record_queries_fishbase.csv")
+
+#XLS data
+xls.files <- list.files(path="~/conapescaspecies/data", pattern = "\\.xls$", full.names = TRUE) %>% 
+  read_xls() %>% 
+  distinct(Species,Latitude, Longitude) %>% 
+  mutate(submitted_name = tolower(Species), source="MIA") %>% 
+  dplyr::rename(species=Species, lat=Latitude, lon=Longitude)
+ 
+write_csv(xls.sp, path="~/conapescaspecies/biodiverdata/record_queries_xls.csv")
+
+```
+
+
+Combine csv files
+```{r combine_csv, include=FALSE}
+
+names.list <- read_csv("distinct_taxonomic_names_rev.csv")
+
+subsp.names <- names.list %>% 
+  mutate(n_word=str_count(old_name, '\\w+')) %>% 
+  filter(n_word>2) %>% 
+  distinct(old_name, name_corre) %>% 
+  rename(valid_name=name_corre)
+
+subsp.list <- subsp.names %>% 
+  pull(old_name)
+
+valid.names.goc <- read_csv("species_synonyms_all.csv")
+
+syn.names <- valid.names.goc %>% 
+  dplyr::select(synonym,valid_name) %>% 
+  rename(old_name=synonym)
+
+check.names <- valid.names.goc %>% 
+  dplyr::select(old_name,valid_name) %>% 
+  bind_rows(syn.names) %>% 
+  distinct(old_name,valid_name) %>% 
+  filter(!old_name %in% subsp.list) %>% 
+  bind_rows(subsp.names) 
+
+sp.list <- names.list %>% 
+  distinct(old_name) %>% 
+  mutate(old_name=trimws(old_name)) %>% 
+  arrange(old_name) %>% 
+  pull(old_name)
+
+biodiver.files <- list.files(path="~/conapescaspecies/biodiverdata", pattern = "\\.csv$", full.names = TRUE)
+
+biodiver.data <- lapply(biodiver.files, fread) %>% 
+  bind_rows()
+
+biodiver.clean <- biodiver.data %>% 
+  as_tibble %>% 
+  mutate(species=tolower(species),submitted_name=tolower(submitted_name)) %>% 
+  distinct(species,lon,lat,submitted_name) %>% 
+  filter(submitted_name %in% sp.list)
+
+
+biodiver.valid <- biodiver.clean %>% 
+  rename(old_name=submitted_name) %>% 
+  left_join(check.names, by="old_name") %>% 
+  distinct(valid_name,lat,lon)
+  
+
+write_csv(biodiver.valid, "biodiversity_all_records.csv")
+```
+
+
+Subset records within spatial area
+
+```{r}
+
+biodiver.valid <- read_csv("biodiversity_all_records.csv")
+
+crs.geo.wgs <- CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")  # geographical, datum WGS84
+
+pacific.shape <- readOGR(".", "pacific_ocean") 
+atlantic.shape <- readOGR(".", "atlantic_ocean") 
+
+biodiver.area <- biodiver.valid %>% 
+     filter(lat > -10) %>%
+     filter(lat < 40) %>% 
+     filter(lon > -130) %>% 
+     filter(lon < -50) %>% 
+    na.omit
+
+biodiver.coor <- biodiver.area
+
+length.biodiver <- 1:nrow(biodiver.coor)
+
+pacific.coors <- mclapply(length.biodiver, get_point, biodiver.coor, area.shape = pacific.shape, area.name="pacific") 
+
+area.name <- "pacific"
+files.pacific <- list.files(paste0("~/conapescaspecies/biodiverdata/",area.name,"_data_files/"),"pacific", full.names = TRUE)
+
+data.pacific <- lapply(files.pacific,read_csv) %>% 
+  bind_rows 
+
+write_csv(data.pacific, "pacific_species_ocurrence.csv")
+
+atlantic.coors <- mclapply(length.biodiver, get_point, biodiver.coor, area.shape = atlantic.shape, area.name="atlantic") 
+
+area.name <- "atlantic"
+
+files.atlantic <- list.files(paste0("~/conapescaspecies/biodiverdata/",area.name,"_data_files/"),"atlantic", full.names = TRUE)
+
+list.atlantic <- 1:length(files.atlantic)
+
+large_append <- function(thisfile, atlantic.occ){
+  
+  print(thisfile)
+  eachfile <- files.atlantic[thisfile]
+  
+  this.data <- fread(eachfile) %>% 
+    as_tibble 
+  
+  if(thisfile==1){
+    
+     fwrite(this.data, file=atlantic.occ)
+  
+  } else if(!thisfile==1){
+ 
+    all.data <- fread(atlantic.occ)
+    
+    this.data <- fread(eachfile) %>% 
+    as_tibble %>% 
+    bind_rows(all.data) %>% 
+    distinct(valid_name,lon,lat)  
+
+    fwrite(this.data, file=atlantic.occ)  
+  }
+  
+}
+
+lapply(list.atlantic,large_append, atlantic.occ="atlantic_species_occurrence.csv") 
+
+```
+
